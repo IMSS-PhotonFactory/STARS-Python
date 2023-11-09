@@ -1,0 +1,785 @@
+#! /usr/bin/perl
+
+use strict;
+use Getopt::Long;
+use stars;
+use Time::HiRes qw(gettimeofday);
+$|=1;
+require "nportsvr.pl";
+
+%::Reg=();					#cache
+
+$::NodeName = 'm2701drv';  # Default Node Name
+
+$::Debug=1;
+# ToDo: You can set option switchs. See help 'Getopt::Long'.
+GetOptions(
+'h'      => \&usage,
+'d'      => \$::Debug
+) or die 'Bad switch.\n';
+
+if($_ = shift(@ARGV)){$::NodeName = $_;}
+
+require 'config.pl';
+
+if(loadcache() ne 'Ok') {
+	die 'Load Configuration Error';
+}
+
+## Open Stars server. $::tak is a Stars object.
+$::tak = stars->new($::NodeName, $::Server)
+	or die 'Could not connect Stars server';
+
+device_init();
+
+$_ = readvalue(':DATA?'); # Connection Test
+if($_ eq '') {
+	print "Connection Error. Check the DMM for $::NodeName";
+	exit(0);
+}
+
+$::tak->addcallback(\&handler);
+
+#%::helpcntrl=();
+#$|=1;
+#set_help_list();
+
+stars->Mainloop();
+
+exit(1);
+
+# Print usage. ---------------------------------------------
+sub usage{
+## Todo: Please modify help message for '-h' option.
+  print "Usage: m2701drv [-h] [-d] [nodename]\n";
+  exit(0);
+}
+
+# Command handler from Stars server ------------------------
+sub handler{
+## ToDo: Please modify handler sub routine.
+##  (The handler sub routine will be called when client
+##  receives a message from a Stars server.)
+	my ($from, $to, $mess) = @_;
+	my $rt;
+
+	if($::Debug){
+		print ksg_localtime(). " STARS RCV: $from>$to $mess\n";
+	}
+
+	if($mess eq 'hello'){
+		$rt = '@hello nice to meet you.';
+	}elsif($mess eq 'help'){
+		$rt = '@help Sorry No Help.';
+	}elsif($mess =~ /^help\s+(.+)/){
+		$rt = '@help Sorry No Help.';
+	}else{
+		$rt = starsMain($from, $to, $mess);
+	}
+	
+	if($mess =~ /^[_@]/){
+		return;
+	}
+	
+	if($rt eq ''){
+		$::tak->Send("$to>$from \@$mess Er: $::Error");
+		if($::Debug){
+			print ksg_localtime(). " STARS SEND: $to>$from \@$mess Er: $::Error\n";
+		}
+	}else{
+		if($rt eq 'Ok'){$rt='Ok:';}
+		$::tak->Send("$to>$from \@$mess $rt"); 
+		if($::Debug){
+			print ksg_localtime(). " STARS SEND: $to>$from \@$mess $rt\n";
+		}
+	}
+}
+
+# Command handler from Stars server ------------------------
+sub starsMain{
+## ToDo: Please modify handler sub routine.
+##  (The handler sub routine will be called when client
+##  receives a message from a Stars server.)
+	my ($from, $to, $mess) = @_;
+	my $rt;
+	my $cmd;
+	my $cmd2;
+	my $value;
+	my $func;
+	my $channel;
+	my $channelname;
+	my $count;
+	my $mess2;
+	my $nodename = $::NodeName;
+	my $test;
+
+	if($::Debug){
+		print "MAIN RCV: $from>$to $mess\n";
+	}
+
+	$nodename =~ /(\S+)drv/;
+	$test = $1;
+	
+	$::Error = '';
+	$rt = '';
+	$channelname = 'DMM';
+	$channel = '';
+	
+	if($to =~ /(.+)\.(.+)/) {
+		$nodename = $1;
+		$channelname = $2;
+		unless(defined($::DESTINATION{$channelname})) {
+			$::Error = "Channel Name Invalid[$2]";
+			return('');
+		}
+		$channel = '(@' . $::DESTINATION{$2} . ')';
+    }
+    
+	if($mess eq 'Reset'){
+		$rt = resetdrv();
+	}elsif($mess eq 'Local'){
+		sendcmd2drv(":SYST:LOCAL");$rt = 'Ok:'
+	}elsif($mess =~ /^GetDeviceList$/){
+		my $devname='all';
+		if(defined($::ALIAS{$devname})){
+			$devname=$::ALIAS{$devname};
+		}
+		foreach (split(/\,/,$devname)){
+			unless(defined($::DESTINATION{$_})) {
+				$::Error = "Channel Name Invalid[$_]";
+				last;
+			}
+			$rt.=",$_";
+		}
+		$rt=~s/^,//;
+	}elsif($mess =~ /^Run\s*(\S*)/){
+		$value = $1;
+		if($value eq 'DMM'){
+			$value='';
+		}
+		sendcmd2drv(':SYSTem:CLEar');	# Clear Error Queue
+		sendcmd2drv('*CLS');		# Clear Event Register And Error Queue
+		sendcmd2drv('TRACe:CLEar');
+		if($channelname eq 'DMM' and ($value ne '')) {
+			if(defined($::ALIAS{$value})){
+				$value=$::ALIAS{$value};
+			}
+			$channel = '';
+			$count = 0;
+			foreach (split(/\,/,$value)){
+				unless(defined($::DESTINATION{$_})) {
+					$::Error = "Channel Name Invalid[$_]";
+					last;
+				}else{
+					$channel = $channel .','. $::DESTINATION{$_};
+					$count = $count + 1;
+				}
+			}
+			if($::Error eq '') {
+				$channel = $channel . ')';
+				$channel =~ s/^,(.+)/\(\@$1/;
+			}
+		}elsif($value ne ''){
+			$::Error = "Channel Name Conflicts[$channelname $value]";
+		}else{
+			$count = 1;
+		}
+		if($::Error eq '') {
+			$cmd2 = ':SYSTem:VERSion?'; # Dummy Read
+			if($::Debug) {
+				print "CHANNEL#$channel#\n";
+			}
+			sendcmd2drv('INIT:CONT OFF');
+			$_ = readvalue($cmd2);
+			sendcmd2drv('FORM:ELEM READ');
+			$_ = readvalue($cmd2);
+			sendcmd2drv('TRIG:SOUR IMM');
+			$_ = readvalue($cmd2);
+			sendcmd2drv('TRIG:COUN 1');
+			$_ = readvalue($cmd2);
+			sendcmd2drv("SAMP:COUN $count");
+			$_ = readvalue($cmd2);
+			if($channel eq '') {
+				sendcmd2drv("SAMP:COUN $count");
+				$_ = readvalue($cmd2);
+			}else{
+				sendcmd2drv("ROUT:SCAN $channel");
+				$_ = readvalue($cmd2);
+				unless($::DMMTYPE_M2000 eq 1) {
+					sendcmd2drv('ROUT:SCAN:TSO IMM'); # Comment for m2000drv
+					$_ = readvalue($cmd2);
+				}
+				sendcmd2drv('ROUT:SCAN:LSEL INT');
+				$_ = readvalue($cmd2);
+			}
+			$rt = 'Ok';
+		}
+	}elsif($mess =~ /^Stop/){
+		sendcmd2drv('ROUT:OPEN:ALL');
+		$rt = 'Ok';
+	}elsif($mess =~ /^GetValue\s*$/){
+		sendcmd2drv(':SYSTem:CLEar');	# Clear Error Queue
+		sendcmd2drv('TRACe:CLEar');
+		$rt = readvalue(':READ?');
+	}elsif($mess =~ /^LoadConfig\s*(\S*)/){
+	
+		sendcmd2drv(':SYSTem:CLEar');	# Clear Error Queue
+		$value = $1;
+		if($channelname eq 'DMM' and $value eq ''){
+			$value = $channelname;
+		}elsif(checkfunction($value,$channel) eq 'Ok'){
+			$value = "$channelname\.$value";
+		}elsif($channelname eq 'DMM'){
+			$::Error = '';
+			foreach $cmd2(split(/\,/,$value)){
+				if($cmd2 =~ /(\S+)\.(\S+)/){
+					if($1 eq 'DMM') {
+						if(checkfunction($2, '' ) ne 'Ok'){last;}
+					}elsif(defined($::DESTINATION{$1})) {
+						if(checkfunction($2, '(@'.$::DESTINATION{$1}.')' ) ne 'Ok'){last;}
+					}else{
+						$::Error = "Channel Name Invalid[$1]";
+						last;
+					}
+				}elsif($cmd2 ne 'DMM'){
+					$::Error = "Channel Name Invalid[$cmd2]";
+					last;
+				}
+			}
+		}else{
+			$::Error = "Channel Name Conflicts[$channelname $value]";
+		}
+		if($::Error eq '') {
+			foreach $cmd2(split(/\,/,$value)){
+				if($cmd2 =~ /DMM\.(\S+)/){
+					$channelname = '';
+					$func = "$1\.";
+				}elsif($cmd2 eq 'DMM'){
+					$channelname = '';
+					$func = '';
+				}elsif($cmd2 =~ /(\S+)\.(\S+)/){
+					$channelname = "\.$1";
+					$func = "$2\.";
+				}
+#				print "$cmd2\n";
+				foreach $cmd(split(/\t/,getcacheregex($to,"$cmd2\."))){
+#				print "$cmd\n";
+					if($cmd eq 'default') {next;}
+					elsif($cmd2 eq 'DMM' and $cmd =~ /^$cmd2\.(\S+)\.(\S+)\=/ and checkfunction($1,'') ne 'Ok') {next;}
+	   				$cmd =~ /^$cmd2\.(\S+)\=(\S+)/;
+					$rt = starsMain($from,"$nodename$channelname","SetFunction $func$1 $2");
+					if($rt eq '') {last;}
+				}
+				if($rt eq '') {last;}
+			}
+			if($::Error eq '') {
+				$rt = 'Ok';
+			}
+		}
+	}elsif($mess =~ /^GetFunction\s+(.+)/){
+		$mess2 = $1;
+		sendcmd2drv(':SYSTem:CLEar');	# Clear Error Queue
+		if($mess2 =~ /^Function/){
+			if($channel eq '') {$cmd = 'FUNC?';}
+			else {$cmd = 'FUNC? ' . $channel;}
+		}elsif($channelname eq 'DMM' and $mess2 =~ /^TriggerDelay(\S*)/){
+			$cmd2 = $1;
+			if($cmd2 eq '.AUTO') {$cmd = 'Trigger:Delay:AUTO?';}
+			elsif($cmd2 eq '') {$cmd = 'Trigger:Delay?';}
+			else {$::Error='Bad command or parameter';}
+		}elsif($mess2 =~ /^(\S+)\.Range(\S*)/){
+			$func = $1;
+			$cmd2 = $2;
+			if(checkfunction($func,$channel) eq 'Ok') {
+				$cmd = $::dmm_range_functions{$func};
+				if($cmd2 eq '.AUTO') {$cmd = $cmd.':AUTO?';}
+				elsif($cmd2 eq '') {$cmd = $cmd.'?';}
+				else {$::Error='Bad command or parameter';}
+				if($channel ne '') {$cmd = $cmd. ' ' . $channel;}
+			}
+		}elsif($mess2 =~ /^(\S+)\.Unit/){
+			$func = $1;
+			if(checkfunction($func,$channel) eq 'Ok') {
+				$cmd = $::dmm_unit_functions{$func};
+				if($channel eq '') {$cmd = $cmd.'?';}
+				else {$cmd = $cmd.'? ' . $channel;}
+			}
+		}elsif($mess2 =~ /^(\S+)\.NPLCycles/){
+			$func = $1;
+			if(checkfunction($func,$channel) eq 'Ok') {
+				$cmd = $::dmm_NPLC_functions{$func};
+				if($channel eq '') {$cmd = $cmd.'?';}
+				else {$cmd = $cmd.'? ' . $channel;}
+			}
+#		}elsif($mess2 =~ /^(\S+)\.AverageCount/){ #BL1A Noise OUKYU SOCHI 2006/10/19
+		}elsif($mess2 =~ /^(DCV)\.AverageCount/){ #DCV Only BL1A Noise OUKYU SOCHI 2006/10/19
+			$func = $1;
+			if(checkfunction($func,$channel) eq 'Ok') {
+##				$cmd = $::dmm_NPLC_functions{$func};
+				$cmd = ':VOLT:DC:AVER:COUNT';
+				if($channel eq '') {$cmd = $cmd.'?';}
+				else {$cmd = $cmd.'? ' . $channel;}
+			}
+#		}elsif($mess2 =~ /^(\S+)\.AverageCount/){ #BL1A Noise OUKYU SOCHI 2006/10/19
+		}elsif($mess2 =~ /^(DCV)\.AverageState/){ #DCV Only BL1A Noise OUKYU SOCHI 2006/10/19
+			$func = $1;
+			if(checkfunction($func,$channel) eq 'Ok') {
+##				$cmd = $::dmm_NPLC_functions{$func};
+				$cmd = ':VOLT:DC:AVER:STATE';
+				if($channel eq '') {$cmd = $cmd.'?';}
+				else {$cmd = $cmd.'? ' . $channel;}
+			}
+#		}elsif($mess2 =~ /^(\S+)\.AverageControl/){ #BL10C Noise OUKYU SOCHI 2012/6/30
+		}elsif($mess2 =~ /^(DCV)\.AverageControl/){ #BL10C Only BL10C Noise OUKYU SOCHI 2012/6/30
+			$func = $1;
+			if(checkfunction($func,$channel) eq 'Ok') {
+##				$cmd = $::dmm_NPLC_functions{$func};
+				$cmd = ':VOLT:DC:AVER:TCON';
+				if($channel eq '') {$cmd = $cmd.'?';}
+				else {$cmd = $cmd.'? ' . $channel;}
+			}
+		}else{
+			$::Error='Bad command or parameter';
+		}
+		if($::Error eq '') {
+			$rt = readvalue($cmd);
+		}
+	}elsif($mess =~ /^SetFunction\s+(.+)/){
+		sendcmd2drv(':SYSTem:CLEar');	# Clear Error Queue
+		$mess2 = $1;
+		if($mess2 =~ /^Function\s+(\S+)/){
+			$func = $1;
+			$rt = checkfunction($func,$channel,1);
+		}elsif($channelname eq 'DMM' and $mess2 =~ /^TriggerDelay\s+(\S+)/){
+			$value = $1;
+			if($value =~ /^AUTO/) { $cmd = 'Trigger:Delay:AUTO ON';}
+			elsif($value ge 0 and $value le 999999.999) { $cmd = "Trigger:Delay $value";}
+			else { $::Error = "TriggerDelay Value Error[$value]";}
+		}elsif($mess2 =~ /^(\S+)\.Range\s+(\S+)/) {
+			$func = $1;
+			$value = $2;
+			if(checkfunction($func,$channel) eq 'Ok') {
+				$cmd = $::dmm_range_functions{$func};
+				if($::dmm_range_values{$cmd} =~ /\,$value\,/) {	# Value Table Check
+					if($value =~ /^AUTO/) { $cmd .= ':AUTO ON';}
+					else { $cmd .= " $value";}
+					if($channel ne '') { $cmd = $cmd.','.$channel;}
+				} else { $::Error = "$func\.Range Value Error[$value]";}
+			}
+		}elsif($mess2 =~ /^(\S+)\.Unit\s+(\S+)/){
+			$func = $1;
+			$value = $2;
+			if(checkfunction($func,$channel) eq 'Ok') {
+				$cmd = $::dmm_unit_functions{$func};
+				if($::dmm_unit_values{$cmd} =~ /\,$value\,/) {	# Value Table Check
+					$cmd .= " $value";
+					if($channel ne '') { $cmd = $cmd.','.$channel;}
+				} else {
+				    $::Error = "$func\.Unit Value Error[$value]";
+				}
+			}
+		}elsif($mess2 =~ /^(\S+)\.NPLCycles\s+(\S+)/){
+			$func = $1;
+			$value = $2;
+			if(checkfunction($func,$channel) eq 'Ok') {
+				$cmd = $::dmm_NPLC_functions{$func};
+				if($value ge 0.002 and $value le $::NPLC_MAX) {	# Value Check
+					$cmd .= " $value";
+					if($channel ne '') { $cmd = $cmd.','.$channel;}
+				} else {
+				    $::Error = "$func\.NPLCycles Value Error[$value]";
+				}
+			}
+#		}elsif($mess2 =~ /^(\S+)\.AverageCount\s+(\S+)/){ #BL1A Noise OUKYU SOCHI 2006/10/19
+		}elsif($mess2 =~ /^(DCV)\.AverageCount\s+(\S+)/){ #DCV Only BL1A Noise OUKYU SOCHI 2006/10/19
+			$func = $1;
+			$value =$2;
+			if(checkfunction($func,$channel) eq 'Ok') {
+##				$cmd = $::dmm_NPLC_functions{$func};
+				$cmd = ':VOLT:DC:AVER:COUNT';
+				if($value >= 1 and $value <= 100) {	# Value Check
+					$cmd .= " $value";
+					if($channel ne '') { $cmd = $cmd.','.$channel;}
+				} else {
+				    $::Error = "$func\.AverageCount Value Error[$value]";
+				}
+			}
+#		}elsif($mess2 =~ /^(\S+)\.AverageState\s+(\S+)/){ #BL1A Noise OUKYU SOCHI 2006/10/19
+		}elsif($mess2 =~ /^(DCV)\.AverageState\s+(\S+)/){ #DCV Only BL1A Noise OUKYU SOCHI 2006/10/19
+			$func = $1;
+			$value =uc($2);
+			if(checkfunction($func,$channel) eq 'Ok') {
+##				$cmd = $::dmm_NPLC_functions{$func};
+				$cmd = ':VOLT:DC:AVER:STATE';
+				if($value=~/^(1|0|ON|OFF)$/) {	# Value Check
+					$cmd .= " $value";
+					if($channel ne '') { $cmd = $cmd.','.$channel;}
+				} else {
+				    $::Error = "$func\.AverageState Value Error[$value]";
+				}
+			}
+#		}elsif($mess2 =~ /^(\S+)\.AverageControl\s+(\S+)/){ #BL10C Noise OUKYU SOCHI 2012/6/30
+		}elsif($mess2 =~ /^(DCV)\.AverageControl\s+(\S+)/){ #DCV Only BL10C Noise OUKYU SOCHI 2012/6/30
+			$func = $1;
+			$value =uc($2);
+			if(checkfunction($func,$channel) eq 'Ok') {
+##				$cmd = $::dmm_NPLC_functions{$func};
+				$cmd = ':VOLT:DC:AVER:TCON';
+				if($value=~/^(REP|MOV)$/) {	# Value Check
+					$cmd .= " $value";
+					if($channel ne '') { $cmd = $cmd.','.$channel;}
+				} else {
+				    $::Error = "$func\.AverageControl Value Error[$value]";
+				}
+			}
+		}else{
+			$::Error='Bad command or parameter';
+		}
+		if($::Error eq '' ) {
+			sendcmd2drv($cmd);
+			$_ = readvalue(':SYST:ERR?');
+			if($_ =~ /^0,/ ) {
+				$rt = 'Ok';
+			} else {
+			    $::Error = "SetFunction $mess2 Execute Error[$_]";
+			}
+		}
+	}elsif($mess =~ /^GetConfig\s+(.+)/){
+		$mess2 = $1;
+		if($channelname eq 'DMM' and $mess2 =~ /^TriggerDelay/){
+			$cmd = "$channelname\.TriggerDelay";
+		}elsif($mess2 =~ /^(\S+)\.Range/){
+			$func = $1;
+			$cmd = "$channelname\.$func\.Range";
+		}elsif($mess2 =~ /^(\S+)\.NPLCycles/){
+			$func = $1;
+			$cmd = "$channelname\.$func\.NPLCycles";
+#		}elsif($mess2 =~ /^(\S+)\.AverageCount/){ #BL1A Noise OUKYU SOCHI 2006/10/19
+		}elsif($mess2 =~ /^(DCV)\.AverageCount/){ #DCV Only BL1A Noise OUKYU SOCHI 2006/10/19
+			$func = $1;
+			$cmd = "$channelname\.$func\.AverageCount";
+#		}elsif($mess2 =~ /^(\S+)\.AverageState/){ #BL1A Noise OUKYU SOCHI 2006/10/19
+		}elsif($mess2 =~ /^(DCV)\.AverageState/){ #DCV Only BL1A Noise OUKYU SOCHI 2006/10/19
+			$func = $1;
+			$cmd = "$channelname\.$func\.AverageState";
+#		}elsif($mess2 =~ /^(\S+)\.AverageControl/){ #BL10C Noise OUKYU SOCHI 2012/6/30
+		}elsif($mess2 =~ /^(DCV)\.AverageControl/){ #DCV Only BL10C Noise OUKYU SOCHI 2012/6/30
+			$func = $1;
+			$cmd = "$channelname\.$func\.AverageControl";
+		}else{
+			$::Error='Bad command or parameter';
+		}
+		if($::Error eq '' ) {
+			$rt = getcache($to,$cmd);
+		}
+	}elsif($mess =~ /^SetConfig\s+(.+)/){
+		$mess2 = $1;
+		if($channelname eq 'DMM' and $mess2 =~ /^TriggerDelay=(\S+)/){
+			$value = $1;
+			if($value =~ /^AUTO/ or ($value ge 0 and $value le 999999.999)) {	# Value Check
+				$cmd = "$channelname\.TriggerDelay";
+			} else {
+		    	$::Error = "TriggerDelay Value Error[$value]";
+			}
+		}elsif($mess2 =~ /^(\S+)\.Range=(\S+)/){
+			$func = $1;
+			$value = $2;
+			if(checkfunction($func,$channel) eq 'Ok') {
+				$cmd = $::dmm_range_functions{$func};
+				if($::dmm_range_values{$cmd} =~ /\,$value\,/) {	# Value Table Check
+					$cmd = "$channelname\.$func\.Range";
+				} else {
+				    $::Error = "$func\.Range Value Error[$value]";
+				}
+			}
+		}elsif($mess2 =~ /^(\S+)\.NPLCycles=(\S+)/){
+			$func = $1;
+			$value = $2;
+			if(checkfunction($func,$channel) eq 'Ok') {
+				if($value ge 0.002 and $value le $::NPLC_MAX) {	# Value Check
+					$cmd = "$channelname\.$func\.NPLCycles";
+				} else {
+			    	$::Error = "$func\.NPLCycles Value Error[$value]";
+				}
+			}
+#		}elsif($mess2 =~ /^(\S+)\.AverageCount=(\S+)/){ #BL1A Noise OUKYU SOCHI 2006/10/19
+		}elsif($mess2 =~ /^(DCV)\.AverageCount=(\S+)/){ #DCV Only BL1A Noise OUKYU SOCHI 2006/10/19
+			$func = $1;
+			$value = $2;
+			if(checkfunction($func,$channel) eq 'Ok') {
+				if($value >= 1 and $value <= 100) {	# Value Check
+					$cmd = "$channelname\.$func\.AverageCount";
+				} else {
+			    	$::Error = "$func\.AverageCount Value Error[$value]";
+				}
+			}
+#		}elsif($mess2 =~ /^(\S+)\.AverageState=(\S+)/){ #BL1A Noise OUKYU SOCHI 2006/10/19
+		}elsif($mess2 =~ /^(DCV)\.AverageState=(\S+)/){ #DCV Only BL1A Noise OUKYU SOCHI 2006/10/19
+			$func = $1;
+			$value = uc($2);
+			if(checkfunction($func,$channel) eq 'Ok') {
+				if($value=~/^(1|0|ON|OFF)$/) {	# Value Check
+					$cmd = "$channelname\.$func\.AverageState";
+				} else {
+			    	$::Error = "$func\.AverageState Value Error[$value]";
+				}
+			}
+#		}elsif($mess2 =~ /^(\S+)\.AverageControl=(\S+)/){ #BL10C Noise OUKYU SOCHI 2012/6/30
+		}elsif($mess2 =~ /^(DCV)\.AverageControl=(\S+)/){ #DCV Only BL10C Noise OUKYU SOCHI 2012/6/30
+			$func = $1;
+			$value = uc($2);
+			if(checkfunction($func,$channel) eq 'Ok') {
+				if($value=~/^(REP|MOV)$/) {	# Value Check
+					$cmd = "$channelname\.$func\.AverageControl";
+				} else {
+			    	$::Error = "$func\.AverageControl Value Error[$value]";
+				}
+			}
+		}else{
+			$::Error='Bad command or parameter';
+		}
+		if($::Error eq '' ) {
+			$rt = setcache($to,$cmd,$value);
+		}
+	}elsif($mess =~ /^$test\s+read/){
+		$rt = readfrmdrv();
+		$rt =~ s/\r//;$rt =~ s/\n//;
+	}elsif($mess =~ /^$test\s+(.+)/){
+		sendcmd2drv($1);$rt = 'Command Executed.'
+	}elsif($mess =~ /^[_@]/){
+		return;
+	}else{
+		$::Error='Bad command or parameter';
+	}
+	return($rt);
+}
+
+# ==============================================================
+sub checkfunction {
+	my $func = shift;
+	my $channel = shift;
+	my $force = shift;
+	my $rt = '';
+	my $str;
+	if($::Debug){
+		print "CHECK FUNCTION#$func $channel#\n";
+	}
+	unless( defined($::dmm_func_functions{$func}) ) {
+		$::Error = "Function Value Error[$func]";
+		return($rt);
+	}
+	if($force) {
+		if($channel eq '') {
+			$str = 'FUNC?';
+		} else {
+			$str = 'FUNC? ' . $channel;
+		}
+		$_ = readvalue($str);	# Read FUNCtion
+		if($_ eq '') {	# Read Error
+			$::Error = 'Function Read Error[No Reply]';	
+			return($rt);
+		} elsif($_ =~ /$::dmm_func_functions{$func}/) {	# Already Selected Ok
+			return('Ok');
+		}
+		if($channel eq '') {
+			$str = "FUNC '".$::dmm_func_functions{$func}."'";
+		} else {
+			$str = "FUNC '".$::dmm_func_functions{$func}."'".",".$channel;
+		}
+		sendcmd2drv($str);
+		$_ = readvalue(':SYST:ERR?');
+		if($_ eq '') {
+	    	$::Error = "SetFunction Error[No Reply]";
+			return($rt);
+		} elsif($_ =~ /^0,/ ) {
+		} else {
+	    	$::Error = "SetFunction Error[$_]";
+			return($rt);
+		}
+	}
+	if($::Debug){
+		print "CHECK FUNCTION#Ok#\n";
+	}
+	return('Ok');
+}
+
+# ==============================================================
+sub resetdrv{
+	my $rt = '';
+	sendcmd2drv(':SYSTem:CLEar');	# Clear Error Queue
+	sendcmd2drv('TRACe:CLEar');
+	sendcmd2drv('*RST');
+	$_ = readvalue(':SYST:ERR?');
+	if($_ eq '') {
+	    $::Error = 'Reset Error[No Reply]';
+		return($rt);
+	} elsif($_ =~ /^0,/ ) {
+	} else {
+	    $::Error = "Reset Error[$_]";
+		return($rt);
+	}
+
+	sendcmd2drv('*CLS');
+	$_ = readvalue(':SYST:ERR?');
+	if($_ eq '') {
+	    $::Error = 'Reset Error[No Reply]';
+		return($rt);
+	} elsif($_ =~ /^0,/ ) {
+	} else {
+	    $::Error = "Reset Error[$_]";
+		return($rt);
+	}
+
+	sendcmd2drv('TRACe:CLEar');
+	$_ = readvalue(':SYST:ERR?');
+	if($_ eq '') {
+	    $::Error = 'Reset Error[No Reply]';
+		return($rt);
+	} elsif($_ =~ /^0,/ ) {
+	} else {
+	    $::Error = "Reset Error[$_]";
+		return($rt);
+	}
+
+	if(readvalue(':SYSTem:VERSion?') eq '') {	# Dummy Read
+		$::Error = 'Reset Error[No Reply]';	
+	}
+	return('Ok');
+}
+
+# ==============================================================
+sub readvalue {
+	my $func = shift;
+	my $retry = 0;
+	my $value = '';
+	my $rt = '';
+
+	sendcmd2drv($func);
+	$value = readfrmdrv();
+	while($value =~ /^\s*$/) {
+		#if($retry ge 10000) {
+			#$::Error = 'Read Error[No Reply]';	
+			#return($rt);
+		#}
+		$rt = readfrmdrv();
+		if($rt eq ''){
+			$retry++;
+		}
+		$value.=$rt;
+	}
+	$value =~ s/\r//;$value =~ s/\n//;
+	return($value);
+}
+
+# ==============================================================
+sub readfrmdrv{
+	my $wsec = shift;
+	
+	my $rt=device_read();
+	if($::Debug){
+		print "NPORT REPLY#$rt#\n";
+	}
+	return($rt);
+}
+
+
+# ==============================================================
+sub sendcmd2drv{
+	my $buf=shift;
+	if($::Debug){
+		print "NPORT SEND#$buf#\n";
+	}
+	device_write("$buf");
+}
+
+# ==============================================================
+sub loadcache{
+    open(BUFREG, $::RegFile);
+    while(<BUFREG>){
+        chomp;s/\r//;
+        if(/^#/){next;}
+        if(/^([^=]+)=(.*)/){
+            $::Reg{$1} = $2;
+            if($::Debug){
+				print "Load Cache#$1#$2#\n";
+            }
+        }
+    }
+    return('Ok');
+}
+
+# ==============================================================
+sub savecache{
+    my $lp;
+    open(BUFREG, ">$::RegFile");
+    for $lp (keys(%::Reg)){
+        print BUFREG $lp."=".$::Reg{$lp}."\n";
+    }
+    close(BUFREG);
+    return('Ok');
+}
+
+# ==============================================================
+sub getcache{
+    my $node = shift;
+    my $property = shift;
+    my $key = "$::NodeName:$property";
+	if($::Debug){
+		print "GETCACHE#$key#\n";
+	}
+    unless(defined($::Reg{$key})){
+        $::Error = 'There is no property.';
+        return('');
+    }
+    if($::Reg{$key} eq ''){return('default');}
+    return($::Reg{$key});
+}
+
+# ==============================================================
+sub setcache{
+    my $node = shift;
+    my $property = shift;
+    my $value = shift;
+    my $key = "$::NodeName:$property";
+	if($::Debug){
+		print "SETCACHE#$key#\n";
+	}
+    unless(defined($::Reg{$key})){
+        $::Error = 'There is no property.';
+        return('');
+    }
+    $::Reg{$key}=$value;
+    return(savecache());
+}
+
+# ==============================================================
+sub getcacheregex{
+    my $node = shift;
+    my $property = shift;
+
+    my $buf;
+    my $key;
+    my @ckeys = keys(%::Reg);
+    @ckeys = grep(/^$node:$property/, @ckeys);
+    my @vals = ();
+
+    for $key (@ckeys){
+        $buf=$key;
+        $buf =~ s/^[^:]+://;
+        push(@vals, "$buf=".$::Reg{$key});
+    }
+    $buf=join("\t", @vals);
+	if($::Debug){
+	    print "GETCACHEREGX#$node:$property $buf\n";
+	}
+    if($buf eq ''){return('default');}
+    return($buf);
+}
+
+sub ksg_localtime{
+my ($sec, $mcsec) = gettimeofday;
+my @tt = localtime($sec);
+return(sprintf("%04d-%02d-%02d %02d:%02d:%02d.%03d",
+$tt[5]+1900,$tt[4]+1,$tt[3],$tt[2],$tt[1],$tt[0],int($mcsec/1000)));
+}
+

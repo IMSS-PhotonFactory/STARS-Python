@@ -1,0 +1,4 @@
+m2701drv:DMM.Function=DCV
+m2701drv:DMM.DCV.Range=AUTO
+m2701drv:CH111.Function=ACV
+m2701drv:CH111.ACV.Range=AUTO

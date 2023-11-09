@@ -1,0 +1,4 @@
+m2701drv:setting.CARD1=7708
+m2701drv:setting.CARD1.CH101=VOLT
+m2701drv:DMM.Function=DCV
+m2701drv:DMM.DCV.Range=AUTO

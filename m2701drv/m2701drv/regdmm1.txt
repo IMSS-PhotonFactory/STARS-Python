@@ -1,0 +1,6 @@
+m2701drv:DMM.DCV.AverageControl=REP
+m2701drv:DMM.DCV.AverageCount=5
+m2701drv:DMM.DCV.AverageState=1
+m2701drv:DMM.DCV.NPLCycles=1
+m2701drv:DMM.DCV.Range=AUTO
+m2701drv:DMM.TriggerDelay=0.01

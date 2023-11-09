@@ -1,0 +1,99 @@
+#!/usr/bin/python3
+#2021-04-27
+import configparser
+import argparse
+import serial
+import re
+import time
+
+class PfiPySerial():
+    def __init__(self, cfg):
+        self.rs = {}
+        self.rdl = {}
+        self.rs['port']      = cfg['Device']
+        self.rs['baudrate']  = 9600
+        self.rs['bytesize']  = serial.EIGHTBITS
+        self.rs['parity']    = serial.PARITY_NONE
+        self.rs['stopbits']  = serial.STOPBITS_ONE
+        self.rs['xonxoff']   = False
+        self.rs['rtscts']    = False
+        self.rs['dsrdtr']    = False
+        self.rs['timeout']   = 2
+        #str buffer for readline
+        self.rdlbuf = ""
+        self.rdl['delimiter'] = "\n"
+        self.rdl['ignore']    = "\r"
+
+        if 'Speed' in cfg:
+            self.rs['baudrate'] = int(cfg['Speed'])
+        if 'Data' in cfg:
+            bp = int(cfg['Data']) - 5
+            if bp >= 0 and bp <= 3:
+                self.rs['bytesize'] = (serial.FIVEBITS, serial.SIXBITS, serial.SEVENBITS, serial.EIGHTBITS)[bp]
+        if 'Parity' in cfg:
+            if re.match('ODD', cfg['Parity'], re.IGNORECASE):
+                self.rs['parity'] = serial.PARITY_ODD
+            elif re.match('EVEN', cfg['Parity'], re.IGNORECASE):
+                self.rs['parity'] = serial.PARITY_EVEN
+            elif re.match('MARK', cfg['Parity'], re.IGNORECASE):
+                self.rs['parity'] = serial.PARITY_MARK
+            elif re.match('SPACE', cfg['Parity'], re.IGNORECASE):
+                self.rs['parity'] = serial.PARITY_SPACE
+        if 'Stop' in cfg:
+            bp = int( float(cfg['Stop']) * 2 ) - 2
+            if bp >= 0 and bp <= 2:
+                self.rs['stopbits'] = (serial.STOPBITS_ONE, serial.STOPBITS_ONE_POINT_FIVE, serial.STOPBITS_TWO)[bp]
+        if 'XonXoff' in cfg:
+            if re.match('(YES|TRUE)', cfg['XonXoff'], re.IGNORECASE):
+                self.rs['xonxoff'] = True
+        if 'RtsCts' in cfg:
+            if re.match('(YES|TRUE)', cfg['RtsCts'], re.IGNORECASE):
+                self.rs['rtscts'] = True
+        if 'DsrDtr' in cfg:
+            if re.match('(YES|TRUE)', cfg['DsrDtr'], re.IGNORECASE):
+                self.rs['dsrdtr'] = True
+        if 'Timeout' in cfg:
+            self.rs['timeout'] = int(cfg['timeout'])
+        if 'Delimiter' in cfg:
+            self.rdl['delimiter'] = cfg['delimiter']
+        if 'Ignore' in cfg:
+            self.rdl['ignore'] = cfg['ignore']
+
+        self.tty = serial.Serial(**self.rs)
+
+    def writeb(self, buf):
+        self.tty.write(buf)
+
+    def readb(self):
+        return self.tty.read()
+
+    def write(self, buf):
+        self.tty.write(buf.encode('utf-8'))
+
+    def read(self):
+        return self.tty.read().decode('utf-8')
+
+    def readline(self):
+        while True:
+            mtchd = re.match('[^{0:}]+{0:}'.format(self.rdl['delimiter']), self.rdlbuf)
+            if mtchd != None:
+                self.rdlbuf = re.sub(mtchd.group(), '', self.rdlbuf, 1)
+                return mtchd.group().replace(self.rdl['delimiter'], '')
+            buf = self.read()
+            if len(buf) == 0:
+                return(buf)
+            self.rdlbuf += buf.replace(self.rdl['ignore'], '')
+
+if __name__ == '__main__':
+    #parser = argparse.ArgumentParser()
+    cfg = configparser.ConfigParser()
+    cfg.read("ttyUSB0.cfg")
+    #parser.add_argument('arg1', help = "Description of arg1")
+    #args = parser.parse_args()
+    myobj = PfiPySerial(cfg['serial'])
+    for l in range(4):
+        myobj.write("b")
+    while True:
+        buf = myobj.readline()
+        if len(buf) !=0:
+            print(buf)

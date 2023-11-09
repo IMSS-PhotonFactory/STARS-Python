@@ -1,0 +1,4 @@
+m2000drv GetFunction DCV.AverageState
+m2000drv GetFunction DCV.AverageCount
+m2000drv SetFunction DCV.AverageState 1
+m2000drv SetFunction DCV.AverageCount 10

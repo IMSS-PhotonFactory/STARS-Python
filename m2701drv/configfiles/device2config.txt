@@ -1,0 +1,3 @@
+m2701drv:DMM.Function=DCV
+m2701drv:DMM.DCV.Range=AUTO
+m2701drv:setting.CARD1=7708
